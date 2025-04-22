@@ -1,4 +1,6 @@
 import numpy as np
+from line_profiler import profile
+
 
 @profile
 def jacobi(u, interior_mask, max_iter=20000, atol=1e-4):
