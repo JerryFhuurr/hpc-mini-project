@@ -89,7 +89,7 @@ def summary_stats(u, interior_mask):
 
 if __name__ == '__main__':
     # Load data
-    LOAD_DIR = 'H:\\Onedrive\\DTU\\02613 HPC\\hpc-mini-project\\modified_swiss_dwellings'  # replace it with ur own path
+    LOAD_DIR = 'modified_swiss_dwellings/'  # replace it with ur own path
     with open(join(LOAD_DIR, 'building_ids.txt'), 'r') as f:
         building_ids = f.read().splitlines()
     
