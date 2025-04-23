@@ -163,3 +163,33 @@ if __name__ == '__main__':
     for bid, u, interior_mask in zip(building_ids, all_u, all_interior_mask):
         stats = summary_stats(u, interior_mask)
         print(f"{bid}, " + ", ".join(str(stats[k]) for k in stat_keys))
+
+
+
+'''
+answer to the question:
+a)
+Your CuPy-based implementation ran one building (ID: 10000) in 1.54 seconds. Compared to the previous results:
+
+Task 7 (CPU JIT): 2.68 sec/building
+
+Task 8 (CUDA with Numba): 0.46 sec/building
+
+Task 9 (CuPy): 1.54 sec/building
+
+While CuPy leverages GPU acceleration, the CUDA kernel in Task 8 was notably faster. This suggests room for optimization in the CuPy implementation, possibly related to memory transfer overhead.
+
+b)
+With 4,571 buildings, the estimated execution time is:
+4571 x 1.54 sec = 7045.14 seconds or approximately 1.95 hours.
+This is faster than the CPU JIT implementation but slower than the CUDA-based Task 8 solution.
+
+c)
+Yes! The CuPy implementation is slower than the custom CUDA kernel from Task 8. This suggests potential inefficiencies, such as:
+
+Excessive memory transfers between CPU and GPU.
+
+Less optimized kernel execution compared to manually structured CUDA code.
+
+Thread/grid configuration inefficiencies affecting parallel performance.
+'''

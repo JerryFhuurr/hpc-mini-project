@@ -128,3 +128,31 @@ if __name__ == '__main__':
     for bid, u, interior_mask in zip(building_ids, all_u, all_interior_mask):
         stats = summary_stats(u, interior_mask)
         print(f"{bid}, " + ", ".join(str(stats[k]) for k in stat_keys))
+
+
+
+'''
+answer to the question:
+a) 
+A CUDA kernel that performs one iteration of the Jacobi method.
+
+A helper function that repeatedly calls the kernel and handles memory transfers.
+
+A fixed number of iterations (5000) instead of checking for convergence, simplifying execution.
+
+Alternating between two arrays (d_u and d_u_new) to avoid race conditions.
+
+A 2D thread grid (16×16 threads per block) for efficient parallelism.
+
+b) 
+You ran one building (ID: 10000) in Task 8 with CUDA in 0.46 seconds, while the CPU JIT solution in Task 7 took 26.81 seconds for 10 buildings → ~2.68 sec/building.
+
+Your CUDA implementation is roughly 5.8× faster than the optimized CPU JIT version.
+
+c)
+With 4,571 buildings, the estimated time is:
+4571 x 0.46 sec = 2106.66 sec = 35.11 min.
+
+Compared to the CPU JIT solution, which would take:
+4571 x 2.68 sec = 12283.08 sec = 204.72 min.
+'''
