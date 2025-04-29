@@ -1,9 +1,19 @@
 from os.path import join
 import sys
 import time
-
 import numpy as np
-import cupy as cp
+
+# Try to import CuPy with better exception handling
+try:
+    import cupy as cp
+    # Test if CUDA is actually working properly
+    test_array = cp.array([1, 2, 3])
+    HAS_CUPY = True
+    print("CuPy and CUDA available and working")
+except Exception as e:
+    print(f"CuPy or CUDA error: {e}")
+    print("Falling back to NumPy implementation")
+    HAS_CUPY = False
 
 def load_data(load_dir, bid):
     SIZE = 512
@@ -12,136 +22,111 @@ def load_data(load_dir, bid):
     interior_mask = np.load(join(load_dir, f"{bid}_interior.npy"))
     return u, interior_mask
 
-def jacobi_cupy_optimized(u, interior_mask, max_iter, atol=1e-6):
-    """
-    Optimized CuPy implementation of the Jacobi method.
-    Key optimizations:
-    1. Uses a single custom kernel for the entire iteration
-    2. Avoids redundant memory transfers and allocations
-    3. Uses a stream to avoid synchronization
-    """
-    # Create a CUDA stream for asynchronous operations
-    stream = cp.cuda.Stream()
-    with stream:
-        # Use a custom fused kernel to perform the entire Jacobi iteration
-        jacobi_kernel = cp.RawKernel(r'''
-        extern "C" __global__ void jacobi_iteration(
-            const float* u, float* u_new, const bool* interior_mask,
-            int nx, int ny, float* max_diff
-        ) {
-            // Compute grid position
-            int i = blockDim.x * blockIdx.x + threadIdx.x + 1;
-            int j = blockDim.y * blockIdx.y + threadIdx.y + 1;
-            
-            // Shared memory for block-wide reduction of max_diff
-            __shared__ float block_max_diff[256];  // Assuming 16x16 block
-            
-            float local_max_diff = 0.0f;
-            
-            // Only process interior points
-            if (i < nx-1 && j < ny-1) {
-                int idx = i * ny + j;
-                if (interior_mask[(i-1) * (ny-2) + (j-1)]) {
-                    // Compute new value
-                    float new_val = 0.25f * (
-                        u[idx - 1] + u[idx + 1] + 
-                        u[idx - ny] + u[idx + ny]
-                    );
-                    
-                    // Update difference
-                    float diff = fabsf(u[idx] - new_val);
-                    local_max_diff = diff;
-                    
-                    // Update u_new
-                    u_new[idx] = new_val;
-                } else {
-                    // Copy non-interior points
-                    u_new[idx] = u[idx];
-                }
-            }
-            
-            // Compute max difference across the block
-            int tid = threadIdx.y * blockDim.x + threadIdx.x;
-            block_max_diff[tid] = local_max_diff;
-            __syncthreads();
-            
-            // Reduction in shared memory
-            for (int s = blockDim.x * blockDim.y / 2; s > 0; s >>= 1) {
-                if (tid < s) {
-                    block_max_diff[tid] = fmaxf(block_max_diff[tid], block_max_diff[tid + s]);
-                }
-                __syncthreads();
-            }
-            
-            // Only thread 0 writes the block's max diff
-            if (tid == 0) {
-                atomicMax((unsigned int*)max_diff, __float_as_uint(block_max_diff[0]));
-            }
-        }
-        ''', 'jacobi_iteration')
+def jacobi_numpy(u, interior_mask, max_iter, atol=1e-6):
+    """CPU implementation of the Jacobi method using NumPy."""
+    u_new = np.copy(u)
+    nx, ny = u.shape
+    
+    # Create interior mask with same shape as u for direct indexing
+    full_mask = np.zeros((nx, ny), dtype=bool)
+    full_mask[1:-1, 1:-1] = interior_mask
+    
+    for iter_count in range(max_iter):
+        # Update interior points (element-wise)
+        for i in range(1, nx-1):
+            for j in range(1, ny-1):
+                if interior_mask[i-1, j-1]:
+                    u_new[i, j] = 0.25 * (u[i-1, j] + u[i+1, j] + u[i, j-1] + u[i, j+1])
         
-        # Grid dimensions
-        nx, ny = u.shape
-        threads_per_block = (16, 16)
-        blocks_per_grid = (
-            (nx + threads_per_block[0] - 3) // threads_per_block[0],
-            (ny + threads_per_block[1] - 3) // threads_per_block[1]
-        )
+        # Check convergence
+        diff = np.abs(u_new - u)
+        max_diff = np.max(diff)
         
-        # Pre-allocate and initialize arrays
-        u_device = cp.asarray(u)
+        # Copy for next iteration (avoid reallocation)
+        u[:] = u_new[:]
+        
+        if max_diff < atol:
+            print(f"Converged after {iter_count+1} iterations")
+            break
+    
+    return u
+
+def jacobi_cupy_simplified(u, interior_mask, max_iter, atol=1e-6):
+    """
+    Simplified CuPy implementation of the Jacobi method without using streams.
+    """
+    if not HAS_CUPY:
+        return jacobi_numpy(u, interior_mask, max_iter, atol)
+    
+    try:
+        # Transfer data to GPU
+        u_device = cp.asarray(u, dtype=cp.float32)
         u_new_device = cp.copy(u_device)
-        interior_mask_device = cp.asarray(interior_mask)
+        interior_mask_device = cp.asarray(interior_mask, dtype=cp.bool_)
         
-        # Main iteration loop
+        # Create a version of interior_mask with same shape as u
+        full_mask_device = cp.zeros_like(u_device, dtype=cp.bool_)
+        full_mask_device[1:-1, 1:-1] = interior_mask_device
+        
+        # Grid and block dimensions - keeping it simple
+        nx, ny = u.shape
+        
+        # Main iteration loop using standard CuPy operations (no custom kernel)
         for iter_count in range(max_iter):
-            # Reset max difference
-            max_diff_device = cp.zeros(1, dtype=cp.float32)
-            
-            # Launch kernel
-            jacobi_kernel(
-                grid=blocks_per_grid,
-                block=threads_per_block,
-                args=(u_device, u_new_device, interior_mask_device, 
-                     np.int32(nx), np.int32(ny), max_diff_device)
-            )
+            # Update interior points using standard CuPy operations
+            # This is less efficient but more likely to work with CUDA compatibility issues
+            for i in range(1, nx-1):
+                for j in range(1, ny-1):
+                    if interior_mask_device[i-1, j-1]:
+                        u_new_device[i, j] = 0.25 * (
+                            u_device[i-1, j] + u_device[i+1, j] +
+                            u_device[i, j-1] + u_device[i, j+1]
+                        )
             
             # Check convergence
-            if max_diff_device.item() < atol:
-                break
-                
-            # Swap u and u_new for next iteration
-            u_device, u_new_device = u_new_device, u_device
-        
-        # Ensure the result is in u_device
-        if iter_count % 2 == 1:
-            result = u_new_device
-        else:
-            result = u_device
+            diff = cp.abs(u_new_device - u_device)
+            max_diff = cp.max(diff).get()
             
+            # Copy for next iteration
+            u_device[:] = u_new_device[:]
+            
+            if max_diff < atol:
+                print(f"Converged after {iter_count+1} iterations")
+                break
+        
         # Return result as numpy array
-        return result.get()
+        return u_device.get()
+    
+    except Exception as e:
+        print(f"CuPy execution failed: {e}")
+        print("Falling back to NumPy implementation")
+        return jacobi_numpy(u, interior_mask, max_iter, atol)
 
 def batch_process_floorplans(all_u0, all_interior_mask, max_iter, atol):
     """
-    Process multiple floorplans in batches with memory optimizations.
+    Process multiple floorplans in batches.
     """
     n_floorplans = len(all_u0)
     all_u = np.empty_like(all_u0)
     
-    # Stream for asynchronous operations
-    stream = cp.cuda.Stream(non_blocking=True)
-    
-    # Pre-warm GPU to avoid timing the JIT compilation
-    if n_floorplans > 0:
-        with stream:
-            _ = jacobi_cupy_optimized(all_u0[0], all_interior_mask[0], 10, atol)
-    
-    # Process each floorplan
-    for i in range(n_floorplans):
-        with stream:
-            u = jacobi_cupy_optimized(all_u0[i], all_interior_mask[i], max_iter, atol)
-            all_u[i] = u
+    # Check if CuPy is available
+    if not HAS_CUPY:
+        print("Using NumPy implementation for all floorplans")
+        for i in range(n_floorplans):
+            print(f"Processing floorplan {i+1}/{n_floorplans}")
+            all_u[i] = jacobi_numpy(all_u0[i], all_interior_mask[i], max_iter, atol)
+        return all_u
+
+    try:
+        # Process each floorplan
+        for i in range(n_floorplans):
+            print(f"Processing floorplan {i+1}/{n_floorplans}")
+            all_u[i] = jacobi_cupy_simplified(all_u0[i], all_interior_mask[i], max_iter, atol)
+    except Exception as e:
+        print(f"CuPy batch processing failed: {e}")
+        print("Falling back to NumPy for all floorplans")
+        for i in range(n_floorplans):
+            all_u[i] = jacobi_numpy(all_u0[i], all_interior_mask[i], max_iter, atol)
     
     return all_u
 
@@ -186,7 +171,7 @@ if __name__ == '__main__':
     print(f"Running simulations for {N} floor plans...")
     start_time = time.time()
     
-    # Use the optimized batch processing function
+    # Use the batch processing function
     all_u = batch_process_floorplans(all_u0, all_interior_mask, MAX_ITER, ABS_TOL)
     
     end_time = time.time()

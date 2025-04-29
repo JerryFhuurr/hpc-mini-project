@@ -1,6 +1,6 @@
 #!/bin/bash
 #BSUB -q hpc
-#BSUB -W 00:05
+#BSUB -W 01:00
 #BSUB -J t10_job
 #BSUB -o t10.txt
 #BSUB -e t10_error.txt
@@ -15,5 +15,8 @@ conda activate 02613
 # Number of floorplans to process
 N=10
 
-# Run the profiler
-nsys profile -o cupy_profile python t9.py $N
+# Run with profiling
+python -m cProfile -o t10_profile.prof t10.py $N
+
+# To visualize the profile later:
+# python -c "import pstats; p = pstats.Stats('t10_profile.prof'); p.sort_stats('cumtime').print_stats(20)"

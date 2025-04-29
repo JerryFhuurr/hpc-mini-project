@@ -108,8 +108,8 @@ if __name__ == '__main__':
         all_interior_mask[i] = interior_mask
     
     # Run jacobi iterations for each floor plan
-    MAX_ITER = 5000  # Reduced from 20,000 for faster testing - adjust as needed
-    ABS_TOL = 1e-4   # Not used in the CUDA implementation
+    MAX_ITER = 20000  # Using the full 20,000 iterations as per task requirements
+    ABS_TOL = 1e-4    # Not used in the CUDA implementation but kept for reference
     
     start_time = time.time()
     
