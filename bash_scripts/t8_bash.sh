@@ -1,9 +1,9 @@
 #!/bin/sh
-#BSUB -q hpc
+#BSUB -q gpua100
 #BSUB -J task8_job
 #BSUB -n 4
 #BSUB -R "span[hosts=1]"
-#BSUB -R "rusage[mem=16GB]"
+#BSUB -R "rusage[mem=4GB]"
 #BSUB -gpu "num=1:mode=exclusive_process"
 #BSUB -W 02:00
 #BSUB -o batch_output/task8_%J.out
