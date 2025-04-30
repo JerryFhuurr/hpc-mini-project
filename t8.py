@@ -62,7 +62,7 @@ def jacobi_cuda(d_u, d_mask, max_iter, stream):
 
 # ──────────────────────── 主程序 ──────────────────────────
 if __name__ == "__main__":
-    LOAD_DIR = r"C:/Users/14349/hpc/未命名文件夹/modified_swiss_dwellings"
+    LOAD_DIR = r"modified_swiss_dwellings/"
 
     # ------- 参数 -------
     N           = int(sys.argv[1]) if len(sys.argv) >= 2 else 1
