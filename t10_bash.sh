@@ -1,6 +1,6 @@
 #!/bin/bash
 #BSUB -q hpc
-#BSUB -W 01:00
+#BSUB -W 10:00
 #BSUB -J t10_job
 #BSUB -o t10.txt
 #BSUB -e t10_error.txt

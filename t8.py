@@ -1,158 +1,149 @@
+import sys, time
 from os.path import join
-import sys
-import time
 
 import numpy as np
-from numba import cuda
+from numba import cuda, float32
+
+# ──────────────────────── 数据读入 ──────────────────────────
+SIZE = 512         # 真实平面尺寸
+PAD  = 2           # 边框
+NYP  = SIZE + PAD  # 514
+DTYPE = np.float32 # 统一使用 float32，减半带宽
 
 def load_data(load_dir, bid):
-    SIZE = 512
-    u = np.zeros((SIZE + 2, SIZE + 2))
-    u[1:-1, 1:-1] = np.load(join(load_dir, f"{bid}_domain.npy"))
-    interior_mask = np.load(join(load_dir, f"{bid}_interior.npy"))
+    """读入单栋 .npy -> (514,514)"""
+    u = np.zeros((NYP, NYP), dtype=DTYPE)
+    u[1:-1, 1:-1] = np.load(join(load_dir, f"{bid}_domain.npy")).astype(DTYPE)
+    interior_mask = np.load(join(load_dir, f"{bid}_interior.npy")).astype(np.bool_)
     return u, interior_mask
 
+
+# ──────────────────────── CUDA Kernel ──────────────────────
 @cuda.jit
-def jacobi_kernel(u, u_new, interior_mask):
-    # Get thread indices
-    i, j = cuda.grid(2)
-    
-    # Check if indices are in bounds and if the point is an interior point
-    if (i > 0 and i < u.shape[0]-1 and 
-        j > 0 and j < u.shape[1]-1 and 
-        interior_mask[i-1, j-1]):
-        
-        # Compute average of neighbors
-        u_new[i, j] = 0.25 * (u[i, j-1] + u[i, j+1] + u[i-1, j] + u[i+1, j])
+def jacobi_kernel(batch_u, batch_u_new, batch_mask):
+    k, i, j = cuda.grid(3)
 
-def jacobi_cuda(u, interior_mask, max_iter, atol=None):
-    """
-    CUDA implementation of the Jacobi method for solving Laplace's equation.
-    This function runs a fixed number of iterations without checking for convergence.
-    
-    Args:
-        u: Initial temperature grid (includes boundary)
-        interior_mask: Boolean mask indicating interior points
-        max_iter: Maximum number of iterations
-        atol: Not used in this implementation
-    
-    Returns:
-        Updated temperature grid after all iterations
-    """
-    # Make a copy of the input
-    u = np.copy(u)
-    
-    # Allocate device memory and copy data to device
-    d_u = cuda.to_device(u)
-    d_u_new = cuda.device_array_like(d_u)
-    d_interior_mask = cuda.to_device(interior_mask)
-    
-    # Define grid and block dimensions
-    # Using 16x16 threads per block is a common choice for 2D problems
-    block_dim = (16, 16)
-    grid_dim = ((u.shape[0] + block_dim[0] - 1) // block_dim[0],
-                (u.shape[1] + block_dim[1] - 1) // block_dim[1])
-    
-    # Initial copy of u to u_new to ensure non-interior points are set correctly
-    d_u_new.copy_to_device(d_u)
-    
-    # Run kernel for specified number of iterations
-    for i in range(max_iter):
-        # Odd iterations: u -> u_new
-        if i % 2 == 0:
-            jacobi_kernel[grid_dim, block_dim](d_u, d_u_new, d_interior_mask)
-        # Even iterations: u_new -> u
-        else:
-            jacobi_kernel[grid_dim, block_dim](d_u_new, d_u, d_interior_mask)
-    
-    # Copy result back to host
-    # If max_iter is odd, the final result is in u_new, otherwise it's in u
-    if max_iter % 2 == 1:
-        result = d_u_new.copy_to_host()
+    if k >= batch_u.shape[0]:
+        return
+    # 注意 batch_u.shape[1]==514，所以 i,j 范围 [0,513]
+    if i == 0 or i == batch_u.shape[1] - 1:
+        return
+    if j == 0 or j == batch_u.shape[2] - 1:
+        return
+
+    # mask 是 512×512，对应 u 的 [1:-1,1:-1]
+    if batch_mask[k, i - 1, j - 1]:
+        batch_u_new[k, i, j] = 0.25 * (
+            batch_u[k, i, j - 1] + batch_u[k, i, j + 1] +
+            batch_u[k, i - 1, j] + batch_u[k, i + 1, j]
+        )
     else:
-        result = d_u.copy_to_host()
-    
-    return result
+        batch_u_new[k, i, j] = batch_u[k, i, j]
 
-def summary_stats(u, interior_mask):
-    u_interior = u[1:-1, 1:-1][interior_mask]
-    mean_temp = u_interior.mean()
-    std_temp = u_interior.std()
-    pct_above_18 = np.sum(u_interior > 18) / u_interior.size * 100
-    pct_below_15 = np.sum(u_interior < 15) / u_interior.size * 100
-    return {
-        'mean_temp': mean_temp,
-        'std_temp': std_temp,
-        'pct_above_18': pct_above_18,
-        'pct_below_15': pct_below_15,
-    }
 
-if __name__ == '__main__':
-    # Load data
-    LOAD_DIR = 'modified_swiss_dwellings/'  # replace it with ur own path
-    with open(join(LOAD_DIR, 'building_ids.txt'), 'r') as f:
-        building_ids = f.read().splitlines()
-    
-    if len(sys.argv) < 2:
-        N = 1
+# ──────────────────────── Jacobi 驱动 ──────────────────────
+def jacobi_cuda(d_u, d_mask, max_iter, stream):
+    d_u_new = cuda.device_array_like(d_u, stream=stream)
+
+    # <<<grid,block,stream>>> 配置
+    BLOCK = (1, 16, 16)  # (k,i,j) 维；楼栋维放 1
+    grid  = (
+        d_u.shape[0],                       # k 方向
+        (NYP + BLOCK[1] - 1) // BLOCK[1],   # i
+        (NYP + BLOCK[2] - 1) // BLOCK[2],   # j
+    )
+
+    cur, nxt = d_u, d_u_new
+    for _ in range(max_iter):
+        jacobi_kernel[grid, BLOCK, stream](cur, nxt, d_mask)
+        cur, nxt = nxt, cur
+    return cur  # 返回当前有效的 device array
+
+
+# ──────────────────────── 主程序 ──────────────────────────
+if __name__ == "__main__":
+    LOAD_DIR = r"C:/Users/14349/hpc/未命名文件夹/modified_swiss_dwellings"
+
+    # ------- 参数 -------
+    N           = int(sys.argv[1]) if len(sys.argv) >= 2 else 1
+    MAX_ITER    = 20000
+    BATCH_SIZE  = 10          # 须根据显存自行调整
+    TOTAL_IN_GPU = False      # 如果显存足够可切 True
+
+    # ------- 读 building id -------
+    with open(join(LOAD_DIR, 'building_ids.txt')) as f:
+        building_ids = f.read().splitlines()[:N]
+
+    # 预分配 pinned host 内存（all_u 最终结果可普通 np.array）
+    all_msk = np.empty((N, SIZE, SIZE), dtype=np.bool_)
+    if TOTAL_IN_GPU:
+        # 一次性载入全部
+        hu0  = cuda.pinned_array((N, NYP, NYP), dtype=DTYPE)
+        hmsk = cuda.pinned_array((N, SIZE, SIZE), dtype=np.bool_)
+        for idx, bid in enumerate(building_ids):
+            hu0[idx], hmsk[idx] = load_data(LOAD_DIR, bid)
+        all_msk[:] = hmsk 
+
+        # 上传到 GPU
+        d_u0   = cuda.to_device(hu0)
+        d_mask = cuda.to_device(hmsk)
+
+        # 计算
+        stream0 = cuda.stream()
+        d_res = jacobi_cuda(d_u0, d_mask, MAX_ITER, stream0)
+        all_u = d_res.copy_to_host(stream=stream0)
+        stream0.synchronize()
+
     else:
-        N = int(sys.argv[1])
-    building_ids = building_ids[:N]
-    
-    # Load floor plans
-    all_u0 = np.empty((N, 514, 514))
-    all_interior_mask = np.empty((N, 512, 512), dtype='bool')
-    for i, bid in enumerate(building_ids):
-        u0, interior_mask = load_data(LOAD_DIR, bid)
-        all_u0[i] = u0
-        all_interior_mask[i] = interior_mask
-    
-    # Run jacobi iterations for each floor plan
-    MAX_ITER = 20000  # Using the full 20,000 iterations as per task requirements
-    ABS_TOL = 1e-4    # Not used in the CUDA implementation but kept for reference
-    
-    start_time = time.time()
-    
-    all_u = np.empty_like(all_u0)
-    for i, (u0, interior_mask) in enumerate(zip(all_u0, all_interior_mask)):
-        # Use the CUDA implementation
-        u = jacobi_cuda(u0, interior_mask, MAX_ITER)
-        all_u[i] = u
-    
-    end_time = time.time()
-    print(f"Total execution time: {end_time - start_time:.2f} seconds")
-    
-    # Print summary statistics in CSV format
-    stat_keys = ['mean_temp', 'std_temp', 'pct_above_18', 'pct_below_15']
-    print('building_id, ' + ', '.join(stat_keys))  # CSV header
-    for bid, u, interior_mask in zip(building_ids, all_u, all_interior_mask):
-        stats = summary_stats(u, interior_mask)
-        print(f"{bid}, " + ", ".join(str(stats[k]) for k in stat_keys))
+        # 分批 + 双 stream 交叠
+        num_batches = (N + BATCH_SIZE - 1) // BATCH_SIZE
+        streams = [cuda.stream(), cuda.stream()]
+        all_u   = np.empty((N, NYP, NYP), dtype=DTYPE)  # 最终结果
+        all_msk = np.empty((N, SIZE, SIZE), dtype=np.bool_)
+
+        start_time = time.time()
+
+        for batch_idx in range(num_batches):
+            s = streams[batch_idx & 1]  # 0/1 交替
+            beg = batch_idx * BATCH_SIZE
+            end = min(beg + BATCH_SIZE, N)
+            curB = end - beg
+
+            # pinned host 批数据
+            h_u0  = cuda.pinned_array((curB, NYP, NYP), dtype=DTYPE)
+            h_msk = cuda.pinned_array((curB, SIZE, SIZE), dtype=np.bool_)
+            for i, bid in enumerate(building_ids[beg:end]):
+                h_u0[i], h_msk[i] = load_data(LOAD_DIR, bid)
+
+            all_msk[beg:end] = h_msk  # 为后面统计
+
+            # 异步复制到 GPU
+            d_u0   = cuda.to_device(h_u0, stream=s)
+            d_mask = cuda.to_device(h_msk, stream=s)
+
+            # 计算
+            d_res = jacobi_cuda(d_u0, d_mask, MAX_ITER, s)
+
+            # 异步将结果拷回
+            d_res.copy_to_host(all_u[beg:end], stream=s)
+
+            # （可选）马上释放 GPU 内存，减少峰值占用
+            del d_u0, d_mask, d_res
+
+        # 等待所有 stream 完成
+        cuda.synchronize()
+        print(f"All batches finished in {time.time()-start_time:.2f} s")
 
 
+    # ─────── 结果统计 ───────
+    def summary(u, m):
+        data = u[1:-1, 1:-1][m]
+        return (data.mean(), data.std(),
+                (data > 18).sum() / data.size * 100,
+                (data < 15).sum() / data.size * 100)
 
-'''
-answer to the question:
-a) 
-A CUDA kernel that performs one iteration of the Jacobi method.
-
-A helper function that repeatedly calls the kernel and handles memory transfers.
-
-A fixed number of iterations (5000) instead of checking for convergence, simplifying execution.
-
-Alternating between two arrays (d_u and d_u_new) to avoid race conditions.
-
-A 2D thread grid (16×16 threads per block) for efficient parallelism.
-
-b) 
-You ran one building (ID: 10000) in Task 8 with CUDA in 0.46 seconds, while the CPU JIT solution in Task 7 took 26.81 seconds for 10 buildings → ~2.68 sec/building.
-
-Your CUDA implementation is roughly 5.8× faster than the optimized CPU JIT version.
-
-c)
-With 4,571 buildings, the estimated time is:
-4571 x 0.46 sec = 2106.66 sec = 35.11 min.
-
-Compared to the CPU JIT solution, which would take:
-4571 x 2.68 sec = 12283.08 sec = 204.72 min.
-'''
+    header = ["mean", "std", "pct>18", "pct<15"]
+    print("building_id," + ",".join(header))
+    for bid, u, m in zip(building_ids, all_u, all_msk):
+        stat = summary(u, m)
+        print(bid + "," + ",".join(f"{x:.4f}" for x in stat))
