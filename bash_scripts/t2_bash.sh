@@ -4,15 +4,15 @@
 #BSUB -R "span[hosts=1]"    
 #BSUB -R "rusage[mem=2048]"
 #BSUB -W 120
-#BSUB -J simulate_parallelization_static
-#BSUB -o simulate_parallelization_static_output.log
-#BSUB -e simulate_parallelization_static_error.log
+#BSUB -J task2
+#BSUB -o task2.log
+#BSUB -e task2_error.log
 #BSUB -q hpc
 
 # 初始化conda环境
 source /dtu/projects/02613_2025/conda/conda_init.sh
-conda activate 02613
+conda activate 02613 
 
 # 运行Python程序
-/usr/bin/time -v python t5_simulate_parallelization_static.py
+/usr/bin/time -v python t2_time_reference.py
    

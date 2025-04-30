@@ -53,7 +53,7 @@ def process_building_subset(tasks_subset, result_queue):
 
 if __name__ == '__main__':
     # Load data
-    LOAD_DIR = 'modified_swiss_dwellings/'
+    LOAD_DIR = 'modified_swiss_dwellings'
     # Run jacobi iterations for each floor plan
     MAX_ITER = 20_000
     ABS_TOL = 1e-4

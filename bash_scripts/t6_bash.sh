@@ -10,9 +10,9 @@
 #BSUB -q hpc
 
 # 初始化conda环境
-module load conda
-conda activate 02613env 
+source /dtu/projects/02613_2025/conda/conda_init.sh
+conda activate 02613
 
 # 运行Python程序
-/usr/bin/time -v python simulate_parallelization.py
+/usr/bin/time -v python t6_simulate_parallelization.py
    
