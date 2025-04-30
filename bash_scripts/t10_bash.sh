@@ -13,7 +13,7 @@ source /dtu/projects/02613_2025/conda/conda_init.sh
 conda activate 02613
 
 # Number of floorplans to process
-N=10
+N=2
 
 # Run with profiling
 python -m cProfile -o t10_profile.prof t10.py $N
