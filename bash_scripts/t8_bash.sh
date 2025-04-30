@@ -1,5 +1,6 @@
 #!/bin/sh
 #BSUB -q gpua100
+#BSUB -u s240396@dtu.dk  
 #BSUB -J task8_job
 #BSUB -n 4
 #BSUB -R "span[hosts=1]"

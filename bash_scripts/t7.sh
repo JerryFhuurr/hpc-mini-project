@@ -1,5 +1,6 @@
 #!/bin/bash
 #BSUB -q hpc
+#BSUB -u s240396@dtu.dk  
 #BSUB -W 00:05
 #BSUB -J t7_job
 #BSUB -o t7.txt

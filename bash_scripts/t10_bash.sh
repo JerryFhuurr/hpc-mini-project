@@ -1,5 +1,6 @@
 #!/bin/bash
 #BSUB -q gpua100
+#BSUB -u s240396@dtu.dk  
 #BSUB -W 10:00
 #BSUB -J t10_job
 #BSUB -o t10.txt
