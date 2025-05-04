@@ -1,31 +1,37 @@
 import numpy as np
 import os
 import time
-from numba import njit
+#from numba import njit
+import numba
 
-LOAD_DIR = "modified_swiss_dwellings"
+LOAD_DIR = "C:/Users/14349/hpc/123/modified_swiss_dwellings"
 building_ids = sorted(set(f.split('_')[0] for f in os.listdir(LOAD_DIR) if f.endswith("_domain.npy")))
 N = 10  # How many buildings to process
 building_ids = building_ids[:N]
 
-@njit
-def jacobi_jit(u, interior_mask, max_iter=20000, atol=1e-4):
-    u = u.copy()
+@numba.jit(nopython=True, cache=True, fastmath=True)
+def jacobi_jit(u, I_idx, J_idx, max_iter=20000, atol=1e-4):
+    n = u.size
+    u_flat = u.reshape(n)    
+    u_new  = u_flat.copy()
+    J = u.shape[1]
+    flat_idx = I_idx * 514 + J_idx
+    npts = flat_idx.shape[0]
+
     for _ in range(max_iter):
         delta = 0.0
-        u_new = u.copy()
-
-        for i in range(1, u.shape[0] - 1):
-            for j in range(1, u.shape[1] - 1):
-                if interior_mask[i - 1, j - 1]:
-                    val = 0.25 * (u[i-1, j] + u[i+1, j] + u[i, j-1] + u[i, j+1])
-                    delta = max(delta, abs(val - u[i, j]))
-                    u_new[i, j] = val
-
-        u = u_new
+        for idx in range(npts):
+            p = flat_idx[idx]
+            val = 0.25 * (u_flat[p-J] + u_flat[p+J] + u_flat[p-1] + u_flat[p+1])
+            u_new[p] = val
+            diff = abs(val - u_flat[p])
+            if diff > delta:
+                delta = diff
+ 
+        u_flat, u_new = u_new, u_flat
         if delta < atol:
             break
-    return u
+    return u_flat.reshape(u.shape)
 
 def summary_stats(u, interior_mask):
     u_interior = u[1:-1, 1:-1][interior_mask]
@@ -46,7 +52,10 @@ def load_data(bid):
 start = time.time()
 for bid in building_ids:
     u0, interior_mask = load_data(bid)
-    u = jacobi_jit(u0, interior_mask)
+    mi, mj = np.where(interior_mask)
+    I_idx = mi + 1
+    J_idx = mj + 1  
+    u = jacobi_jit(u0, I_idx, J_idx)
     stats = summary_stats(u, interior_mask)
     print(f"{bid},", ", ".join(f"{v:.2f}" for v in stats.values()))
 print(f"\nProcessed {N} buildings in {time.time() - start:.2f} seconds")

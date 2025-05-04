@@ -2,8 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load data
-domain = np.load("modified_swiss_dwellings/114_domain.npy")
-interior = np.load("modified_swiss_dwellings/114_interior.npy")
+domain = np.load("114_domain.npy")
+interior = np.load("114_interior.npy")
 
 # Plotting
 fig, axes = plt.subplots(1, 2, figsize=(12, 6))

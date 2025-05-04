@@ -3,29 +3,42 @@ import sys
 from multiprocessing import Pool
 import numpy as np
 import time
+import numba
 
 
 def load_data(load_dir, bid):
     SIZE = 512
-    u = np.zeros((SIZE + 2, SIZE + 2))
-    u[1:-1, 1:-1] = np.load(join(load_dir, f"{bid}_domain.npy"))
+    u = np.zeros((SIZE + 2, SIZE + 2), dtype=np.float32)
+    u[1:-1, 1:-1] = np.load(join(load_dir, f"{bid}_domain.npy")).astype(np.float32)
     interior_mask = np.load(join(load_dir, f"{bid}_interior.npy"))
     return u, interior_mask
 
 
-def jacobi(u, interior_mask, max_iter, atol=1e-6):
-    u = np.copy(u)
+@numba.jit(nopython=True, cache=True, fastmath=True)
+def jacobi(u_flat, J, flat_idx, max_iter, atol=1e-6):
+    #n = u.size
+    n = u_flat.size
+    #u_flat = u.reshape(n)    
+    u_new  = u_flat.copy()
+    #J = u.shape[1]
+    #flat_idx = I_idx * 514 + J_idx
+    npts = flat_idx.shape[0]
 
-    for i in range(max_iter):
-        # Compute average of left, right, up and down neighbors, see eq. (1)
-        u_new = 0.25 * (u[1:-1, :-2] + u[1:-1, 2:] + u[:-2, 1:-1] + u[2:, 1:-1])
-        u_new_interior = u_new[interior_mask]
-        delta = np.abs(u[1:-1, 1:-1][interior_mask] - u_new_interior).max()
-        u[1:-1, 1:-1][interior_mask] = u_new_interior
-
+    for _ in range(max_iter):
+        delta = 0.0
+        for idx in range(npts):
+            p = flat_idx[idx]
+            val = 0.25 * (u_flat[p-J] + u_flat[p+J] + u_flat[p-1] + u_flat[p+1])
+            u_new[p] = val
+            diff = abs(val - u_flat[p])
+            if diff > delta:
+                delta = diff
+ 
+        u_flat, u_new = u_new, u_flat
         if delta < atol:
             break
-    return u
+    #return u_flat.reshape(u.shape)
+    return u_flat
 
 
 def summary_stats(u, interior_mask):
@@ -44,22 +57,28 @@ def summary_stats(u, interior_mask):
 def process_building(args):
     load_dir, bid, max_iter, atol = args
     u, interior_mask = load_data(load_dir, bid)
-    u = jacobi(u, interior_mask, max_iter, atol)
+    mi, mj = np.where(interior_mask)
+    I_idx = mi + 1
+    J_idx = mj + 1  
+    flat_idx = I_idx * 514 + J_idx
+    u_flat = u.ravel().astype(np.float32)    
+    u_flat = jacobi(u_flat, u.shape[1], flat_idx, max_iter, atol)
+    u = u_flat.reshape(u.shape)
     stats = summary_stats(u, interior_mask)
     return bid, stats
 
 
 if __name__ == '__main__':
     # Load data
-    LOAD_DIR = '/Users/weikangwan/Downloads/学习资料/hpc/modified_swiss_dwellings/'
+    LOAD_DIR = 'C:/Users/14349/hpc/123/modified_swiss_dwellings/'
     # Run jacobi iterations for each floor plan
     MAX_ITER = 20_000
     ABS_TOL = 1e-4
     with open(join(LOAD_DIR, 'building_ids.txt'), 'r') as f:
         building_ids = f.read().splitlines()
 
-    N = 16
-    n_processor_list = np.array((1, 2, 4, 8))
+    N = 4571
+    n_processor_list = np.array((32, ))
     runtime = np.zeros((np.size(n_processor_list)))
 
     for num in range(np.size(n_processor_list)):
@@ -79,18 +98,8 @@ if __name__ == '__main__':
         print(f"run time: {end - start}")
 
 
-
-
-
-
-
-
-
-
-
-
     # Print summary statistics in CSV format
-    #stat_keys = ['mean_temp', 'std_temp', 'pct_above_18', 'pct_below_15']
-    #print('building_id, ' + ', '.join(stat_keys))  # CSV header
-    #for bid, stats in results:
-        #print(f"{bid},", ", ".join(str(stats[k]) for k in stat_keys))
+    stat_keys = ['mean_temp', 'std_temp', 'pct_above_18', 'pct_below_15']
+    print('building_id, ' + ', '.join(stat_keys))  # CSV header
+    for bid, stats in results:
+        print(f"{bid},", ", ".join(str(stats[k]) for k in stat_keys))
